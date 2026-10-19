@@ -13,5 +13,5 @@
     "splashColor": "#10151c",
     "disableBackHistoryAPI": true,
     "handlesRelaunch": false,
-    "requiredACG": ["activity.operation", "database.operation", "network.query"]
+    "requiredACG": ["activity.operation", "database.operation", "network.query", "audio.operation"]
 }

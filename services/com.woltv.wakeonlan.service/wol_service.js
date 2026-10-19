@@ -10,6 +10,7 @@ var KIND = 'com.woltv.wakeonlan:1';
 var CONN_URI = 'luna://com.webos.service.connectionmanager';
 var TVPOWER_URI = 'luna://com.webos.service.tvpower/power';
 var ACTIVITY_URI = 'luna://com.palm.activitymanager';
+var AUDIO_URI = 'luna://com.webos.audio';
 
 var FLAGS = {
     broadcast: true
@@ -65,6 +66,211 @@ function lunaCall(uri, method, parameters, cb, timeoutMs) {
 
 function dbCall(method, parameters, cb, timeoutMs) {
     lunaCall(DB_URI, method, parameters, cb, timeoutMs);
+}
+
+var SCHEDULE = {
+    volume: { startHour: 9, startMinute: 0, endHour: 22, endMinute: 0, onValue: 13, offValue: 7 }
+};
+
+var VOL_KIND = 'com.woltv.wakeonlan.volume:1';
+var volumeCache = null;
+
+function defaultVolumeForHour(hour) {
+    var h = hour % 24;
+    var start = SCHEDULE.volume.startHour;
+    var end = SCHEDULE.volume.endHour;
+    if (start <= end) {
+        return (h >= start && h < end) ? SCHEDULE.volume.onValue : SCHEDULE.volume.offValue;
+    }
+    return (h >= start || h < end) ? SCHEDULE.volume.onValue : SCHEDULE.volume.offValue;
+}
+
+var scheduleState = {
+    targets: [],
+    lastAppliedVolume: null,
+    lastCheck: 0,
+    lastApplied: 0,
+    applied: '',
+    errors: []
+};
+
+function initTargets() {
+    if (scheduleState.targets.length === 24) { return; }
+    scheduleState.targets = [];
+    for (var h = 0; h < 24; h++) {
+        scheduleState.targets.push(defaultVolumeForHour(h));
+    }
+}
+
+function targetVolume(now) {
+    var h = now.getHours() % 24;
+    var stored = scheduleState.targets[h];
+    if (typeof stored === 'number') { return stored; }
+    return defaultVolumeForHour(h);
+}
+
+function setVolume(value, cb) {
+    lunaCall(AUDIO_URI, 'setVolume', { volume: value }, function (res) {
+        if (cb) { cb(res); }
+    }, 3000);
+}
+
+function getVolume(cb) {
+    lunaCall(AUDIO_URI, 'getVolume', {}, function (res) {
+        var v = (res && typeof res.volume === 'number') ? res.volume : null;
+        cb(v, res);
+    }, 3000);
+}
+
+function rememberScheduleError(text) {
+    scheduleState.errors.push(text);
+    if (scheduleState.errors.length > 12) { scheduleState.errors.shift(); }
+    console.log('schedule error: ' + text);
+}
+
+function ensureVolumeKind(cb) {
+    dbCall('putKind', {
+        id: VOL_KIND,
+        owner: SERVICE_NAME,
+        private: true,
+        indexes: [{ name: 'default', props: [{ name: '_kind' }] }]
+    }, function () {
+        cb();
+    });
+}
+
+function loadVolumeTargets(cb) {
+    initTargets();
+    dbCall('find', { query: { from: VOL_KIND } }, function (res) {
+        var raw = null;
+        if (res && res.returnValue && res.results && res.results.length > 0) {
+            raw = res.results[0];
+        }
+        volumeCache = raw || {};
+        if (volumeCache && typeof volumeCache.hours === 'object' && volumeCache.hours) {
+            for (var h = 0; h < 24; h++) {
+                var v = volumeCache.hours[h];
+                if (typeof v === 'number') { scheduleState.targets[h] = v; }
+            }
+        }
+        console.log('volume targets loaded: ' + scheduleState.targets.join(','));
+        if (cb) { cb(); }
+    });
+}
+
+function persistVolumeTargets() {
+    var obj = { _kind: VOL_KIND };
+    if (volumeCache && volumeCache._id) { obj._id = volumeCache._id; }
+    obj.hours = [];
+    for (var h = 0; h < 24; h++) {
+        obj.hours.push(scheduleState.targets[h]);
+    }
+    volumeCache = obj;
+    dbCall('put', { objects: [obj] }, function (res) {
+        if (res && res.returnValue) { return; }
+        ensureVolumeKind(function () {
+            dbCall('put', { objects: [obj] }, function () { });
+        });
+    });
+}
+
+function recordUserVolume(hour, value) {
+    var h = hour % 24;
+    if (scheduleState.targets[h] === value) { return; }
+    scheduleState.targets[h] = value;
+    console.log('learned user volume hour=' + h + ' value=' + value);
+    persistVolumeTargets();
+}
+
+function applySchedule(force) {
+    var now = new Date();
+    var hour = now.getHours();
+    getVolume(function (cur) {
+        scheduleState.lastCheck = Date.now();
+        if (cur === null) {
+            rememberScheduleError('getVolume failed');
+            return;
+        }
+        if (!force && scheduleState.lastAppliedVolume !== null && cur !== scheduleState.lastAppliedVolume) {
+            recordUserVolume(hour, cur);
+        }
+        scheduleState.lastAppliedVolume = cur;
+        var target = targetVolume(now);
+        if (cur === target) { return; }
+        setVolume(target, function (res) {
+            if (res && res.returnValue) {
+                scheduleState.lastAppliedVolume = target;
+                scheduleState.lastApplied = Date.now();
+                scheduleState.applied = 'volume=' + target;
+                console.log('schedule applied: volume=' + target);
+            } else {
+                rememberScheduleError('volume failed: ' + (res && res.errorText || ''));
+            }
+        });
+    });
+}
+
+var volumeSubscription = null;
+var volumeSubOk = false;
+
+function subscribeVolume() {
+    if (volumeSubscription) { return; }
+    try {
+        volumeSubscription = service.subscribe(AUDIO_URI + '/getVolume', { subscribe: true });
+    } catch (e) {
+        rememberScheduleError('volume subscribe failed: ' + String(e && e.message || e));
+        scheduleResubscribe();
+        return;
+    }
+    volumeSubscription.on('response', function (message) {
+        var payload = (message && message.payload) || {};
+        if (payload.subscribed === true) {
+            if (!volumeSubOk) {
+                volumeSubOk = true;
+                console.log('volume subscription established');
+            }
+            return;
+        }
+        if (typeof payload.volume === 'number') {
+            var cur = payload.volume;
+            var now = new Date();
+            var hour = now.getHours();
+            if (scheduleState.lastAppliedVolume !== null && cur !== scheduleState.lastAppliedVolume) {
+                recordUserVolume(hour, cur);
+            }
+            scheduleState.lastAppliedVolume = cur;
+            applySchedule(true);
+        }
+    });
+    volumeSubscription.on('cancel', function () {
+        volumeSubOk = false;
+        volumeSubscription = null;
+        console.log('volume subscription cancelled');
+        scheduleResubscribe();
+    });
+}
+
+function scheduleResubscribe() {
+    setTimeout(function () {
+        if (!volumeSubOk) {
+            volumeSubscription = null;
+            subscribeVolume();
+        }
+    }, 3000);
+}
+
+var boundaryTimer = null;
+
+function scheduleBoundaryCheck() {
+    if (boundaryTimer) { clearTimeout(boundaryTimer); }
+    var now = new Date();
+    var nextHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0, 0);
+    var delay = nextHour.getTime() - now.getTime();
+    if (delay < 0) { delay = 0; }
+    boundaryTimer = setTimeout(function () {
+        applySchedule(true);
+        scheduleBoundaryCheck();
+    }, delay);
 }
 
 function ensureKind(cb) {
@@ -426,6 +632,12 @@ function watchResumeGap() {
     console.log('resume detected by timer gap: ' + gap + 'ms');
     rememberEvent('时钟跳变 ' + Math.round(gap / 1000) + ' 秒，判定为电视恢复');
     triggerWake('resume-gap', { gapMs: gap });
+    applySchedule(true);
+    if (!volumeSubOk) {
+        volumeSubscription = null;
+        subscribeVolume();
+    }
+    scheduleBoundaryCheck();
 }
 
 function registerPowerTrigger(trigger) {
@@ -540,9 +752,18 @@ registerIncomingHooks();
 keepResident();
 ensurePersistActivity();
 registerPowerTriggers();
+loadVolumeTargets(function () {
+    applySchedule(true);
+    subscribeVolume();
+    scheduleBoundaryCheck();
+});
 
 setInterval(function () {
     registerPowerTriggers();
+    if (!volumeSubOk) {
+        volumeSubscription = null;
+        subscribeVolume();
+    }
 }, 60 * 1000);
 
 setInterval(watchResumeGap, HEARTBEAT_INTERVAL_MS);
@@ -605,7 +826,16 @@ service.register('getStatus', function (message) {
         uptimeSec: Math.round((Date.now() - startedAt) / 1000),
         resident: resident,
         heartbeat: heartbeat,
-        power: power
+        power: power,
+        schedule: {
+            volume: scheduleState.lastAppliedVolume,
+            targets: scheduleState.targets,
+            applied: scheduleState.applied,
+            lastApplied: scheduleState.lastApplied,
+            lastCheck: scheduleState.lastCheck,
+            errors: scheduleState.errors,
+            config: SCHEDULE
+        }
     });
 });
 
