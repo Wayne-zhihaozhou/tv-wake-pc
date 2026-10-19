@@ -212,6 +212,7 @@ function applySchedule(force) {
 
 var volumeSubscription = null;
 var volumeSubOk = false;
+var volumeRetryDelay = 3000;
 
 function subscribeVolume() {
     if (volumeSubscription) { return; }
@@ -219,7 +220,7 @@ function subscribeVolume() {
         volumeSubscription = service.subscribe(AUDIO_URI + '/getVolume', { subscribe: true });
     } catch (e) {
         rememberScheduleError('volume subscribe failed: ' + String(e && e.message || e));
-        scheduleResubscribe();
+        scheduleVolumeRetry();
         return;
     }
     volumeSubscription.on('response', function (message) {
@@ -227,6 +228,7 @@ function subscribeVolume() {
         if (payload.subscribed === true) {
             if (!volumeSubOk) {
                 volumeSubOk = true;
+                volumeRetryDelay = 3000;
                 console.log('volume subscription established');
             }
             return;
@@ -246,17 +248,28 @@ function subscribeVolume() {
         volumeSubOk = false;
         volumeSubscription = null;
         console.log('volume subscription cancelled');
-        scheduleResubscribe();
+        scheduleVolumeRetry();
     });
 }
 
-function scheduleResubscribe() {
+function scheduleVolumeRetry() {
     setTimeout(function () {
-        if (!volumeSubOk) {
+        if (!volumeSubOk && !volumeSubscription) {
             volumeSubscription = null;
             subscribeVolume();
         }
-    }, 3000);
+        volumeRetryDelay = Math.min(volumeRetryDelay * 2, 60000);
+    }, volumeRetryDelay);
+}
+
+function resubscribeVolume(force) {
+    if (volumeSubscription) {
+        try { volumeSubscription.cancel(); } catch (e) { }
+        volumeSubscription = null;
+    }
+    volumeSubOk = false;
+    volumeRetryDelay = 3000;
+    subscribeVolume();
 }
 
 var boundaryTimer = null;
@@ -633,10 +646,7 @@ function watchResumeGap() {
     rememberEvent('时钟跳变 ' + Math.round(gap / 1000) + ' 秒，判定为电视恢复');
     triggerWake('resume-gap', { gapMs: gap });
     applySchedule(true);
-    if (!volumeSubOk) {
-        volumeSubscription = null;
-        subscribeVolume();
-    }
+    resubscribeVolume(true);
     scheduleBoundaryCheck();
 }
 
@@ -760,10 +770,6 @@ loadVolumeTargets(function () {
 
 setInterval(function () {
     registerPowerTriggers();
-    if (!volumeSubOk) {
-        volumeSubscription = null;
-        subscribeVolume();
-    }
 }, 60 * 1000);
 
 setInterval(watchResumeGap, HEARTBEAT_INTERVAL_MS);
