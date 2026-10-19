@@ -262,16 +262,6 @@ function scheduleVolumeRetry() {
     }, volumeRetryDelay);
 }
 
-function resubscribeVolume(force) {
-    if (volumeSubscription) {
-        try { volumeSubscription.cancel(); } catch (e) { }
-        volumeSubscription = null;
-    }
-    volumeSubOk = false;
-    volumeRetryDelay = 3000;
-    subscribeVolume();
-}
-
 var boundaryTimer = null;
 
 function scheduleBoundaryCheck() {
@@ -615,9 +605,6 @@ function ackPowerPrepare(ackMethod, triggerMethod, timestamp) {
 }
 
 var lastTriggerAt = 0;
-var HEARTBEAT_INTERVAL_MS = 10000;
-var HEARTBEAT_GAP_MS = 60000;
-var heartbeat = { last: Date.now(), gapCount: 0, lastGapMs: 0 };
 
 function triggerWake(reason, detail) {
     var now = Date.now();
@@ -633,21 +620,6 @@ function triggerWake(reason, detail) {
     loadConfig(function (err, cfg) {
         sendMagicPacket(cfg, reason, function () { });
     });
-}
-
-function watchResumeGap() {
-    var now = Date.now();
-    var gap = now - heartbeat.last;
-    heartbeat.last = now;
-    if (gap < HEARTBEAT_GAP_MS) { return; }
-    heartbeat.gapCount++;
-    heartbeat.lastGapMs = gap;
-    console.log('resume detected by timer gap: ' + gap + 'ms');
-    rememberEvent('时钟跳变 ' + Math.round(gap / 1000) + ' 秒，判定为电视恢复');
-    triggerWake('resume-gap', { gapMs: gap });
-    applySchedule(true);
-    resubscribeVolume(true);
-    scheduleBoundaryCheck();
 }
 
 function registerPowerTrigger(trigger) {
@@ -772,8 +744,6 @@ setInterval(function () {
     registerPowerTriggers();
 }, 60 * 1000);
 
-setInterval(watchResumeGap, HEARTBEAT_INTERVAL_MS);
-
 service.register('wake', function (message) {
     var p = message.payload || {};
     loadConfig(function (err, cfg) {
@@ -831,7 +801,6 @@ service.register('getStatus', function (message) {
         startedAt: startedAt,
         uptimeSec: Math.round((Date.now() - startedAt) / 1000),
         resident: resident,
-        heartbeat: heartbeat,
         power: power,
         schedule: {
             volume: scheduleState.lastAppliedVolume,
