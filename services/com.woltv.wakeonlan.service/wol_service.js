@@ -27,7 +27,10 @@ var DEFAULT_CONFIG = {
 // Runtime feature switches (configured through the config doc).
 // When a feature is off, none of its code runs (no subscriptions, no timers),
 // so consumption is kept to a minimum.
+// FEATURE.wake holds the desired on/off state; wakeStarted/volumeStarted track
+// whether the corresponding subscriptions/timers are actually running.
 var FEATURE = { wake: true, volume: true };
+var wakeStarted = false;
 var wakeFeatureInterval = null;
 var volumeStarted = false;
 
@@ -749,21 +752,23 @@ function ensurePersistActivity() {
 }
 
 function startWakeFeature() {
-    if (FEATURE.wake) { return; }
+    if (wakeStarted) { return; }
+    wakeStarted = true;
     FEATURE.wake = true;
     keepResident();
     ensurePersistActivity();
     registerPowerTriggers();
     if (!wakeFeatureInterval) {
         wakeFeatureInterval = setInterval(function () {
-            if (FEATURE.wake) { registerPowerTriggers(); }
+            if (wakeStarted) { registerPowerTriggers(); }
         }, 60 * 1000);
     }
     console.log('wake feature enabled');
 }
 
 function stopWakeFeature() {
-    if (!FEATURE.wake) { return; }
+    if (!wakeStarted) { return; }
+    wakeStarted = false;
     FEATURE.wake = false;
     if (wakeFeatureInterval) {
         clearInterval(wakeFeatureInterval);
