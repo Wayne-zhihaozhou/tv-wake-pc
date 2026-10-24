@@ -14,7 +14,9 @@
         exit: document.getElementById('btnExit'),
         wake: document.getElementById('btnWake'),
         status: document.getElementById('status'),
-        powerDiag: document.getElementById('powerDiag')
+        powerDiag: document.getElementById('powerDiag'),
+        enableWake: document.getElementById('enableWake'),
+        enableVolume: document.getElementById('enableVolume')
     };
 
     var devicesCache = [];
@@ -234,11 +236,26 @@
         if (!els.mac.value.trim()) { els.mac.value = DEFAULT_MAC; }
     }
 
+    function setToggle(el, on) {
+        if (!el) { return; }
+        el.setAttribute('aria-pressed', on ? 'true' : 'false');
+        el.textContent = el.getAttribute('data-label') + '：' + (on ? '开' : '关');
+    }
+
     function applyConfig(c) {
         els.mac.value = (c && c.mac) || DEFAULT_MAC;
         els.ip.value = (c && c.ip) || '255.255.255.255';
         els.port.value = (c && typeof c.port === 'number') ? c.port : 9;
         ensureMacDefault();
+        setToggle(els.enableWake, !c || c.enableWake !== false);
+        setToggle(els.enableVolume, !c || c.enableVolume !== false);
+        updateWakeControls();
+    }
+
+    function updateWakeControls() {
+        var on = els.enableWake && els.enableWake.getAttribute('aria-pressed') === 'true';
+        els.scan.disabled = !on;
+        els.wake.disabled = !on;
     }
 
     function loadConfig() {
@@ -259,7 +276,9 @@
         return {
             mac: els.mac.value.trim(),
             ip: els.ip.value.trim() || '255.255.255.255',
-            port: parseInt(els.port.value, 10) || 9
+            port: parseInt(els.port.value, 10) || 9,
+            enableWake: els.enableWake ? els.enableWake.getAttribute('aria-pressed') === 'true' : true,
+            enableVolume: els.enableVolume ? els.enableVolume.getAttribute('aria-pressed') === 'true' : true
         };
     }
 
@@ -284,6 +303,10 @@
     }
 
     function wakeNow() {
+        if (!els.enableWake || els.enableWake.getAttribute('aria-pressed') !== 'true') {
+            setStatus('魔术包唤醒功能已关闭，无法发送', 'err');
+            return;
+        }
         var cfg = readForm();
         if (!validMac(cfg.mac)) {
             setStatus('请先选择设备或填写正确的 MAC 地址', 'err');
@@ -369,9 +392,10 @@
     function getFocusOrder() {
         var sel = [
             els.device, els.scan, els.mac, els.ip, els.port,
+            els.enableWake, els.enableVolume,
             els.save, els.exit, els.wake
         ];
-        return sel.filter(function (el) { return el && el.offsetParent !== null; });
+        return sel.filter(function (el) { return el && el.offsetParent !== null && !el.disabled; });
     }
 
     function focusAt(index) {
@@ -464,6 +488,19 @@
     els.save.addEventListener('click', saveConfig);
     els.exit.addEventListener('click', exitApp);
     els.wake.addEventListener('click', wakeNow);
+
+    function wireToggle(el, label) {
+        if (!el) { return; }
+        el.setAttribute('data-label', label);
+        el.addEventListener('click', function () {
+            var on = el.getAttribute('aria-pressed') === 'true';
+            setToggle(el, !on);
+            updateWakeControls();
+            setStatus('功能开关已修改，请点击「保存」生效', '');
+        });
+    }
+    wireToggle(els.enableWake, '魔术包唤醒功能');
+    wireToggle(els.enableVolume, '调节音量功能');
 
     loadConfig();
     loadBuildInfo();

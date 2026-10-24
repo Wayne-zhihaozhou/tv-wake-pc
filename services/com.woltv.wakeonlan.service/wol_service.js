@@ -19,8 +19,17 @@ var FLAGS = {
 var DEFAULT_CONFIG = {
     mac: 'CC:28:AA:A7:B4:1F',
     ip: '255.255.255.255',
-    port: 9
+    port: 9,
+    enableWake: true,
+    enableVolume: true
 };
+
+// Runtime feature switches (configured through the config doc).
+// When a feature is off, none of its code runs (no subscriptions, no timers),
+// so consumption is kept to a minimum.
+var FEATURE = { wake: true, volume: true };
+var wakeFeatureInterval = null;
+var volumeStarted = false;
 
 var service = new Service(SERVICE_NAME);
 var lastSend = { at: 0, ok: false, error: '', reason: '' };
@@ -183,6 +192,7 @@ function recordUserVolume(hour, value) {
 }
 
 function applySchedule(force) {
+    if (!volumeStarted) { return; }
     var now = new Date();
     var hour = now.getHours();
     getVolume(function (cur) {
@@ -215,6 +225,7 @@ var volumeSubOk = false;
 var volumeRetryDelay = 3000;
 
 function subscribeVolume() {
+    if (!volumeStarted) { return; }
     if (volumeSubscription) { return; }
     try {
         volumeSubscription = service.subscribe(AUDIO_URI + '/getVolume', { subscribe: true });
@@ -254,6 +265,7 @@ function subscribeVolume() {
 
 function scheduleVolumeRetry() {
     setTimeout(function () {
+        if (!volumeStarted) { return; }
         if (!volumeSubOk && !volumeSubscription) {
             volumeSubscription = null;
             subscribeVolume();
@@ -265,6 +277,7 @@ function scheduleVolumeRetry() {
 var boundaryTimer = null;
 
 function scheduleBoundaryCheck() {
+    if (!volumeStarted) { return; }
     if (boundaryTimer) { clearTimeout(boundaryTimer); }
     var now = new Date();
     var nextHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0, 0);
@@ -294,6 +307,8 @@ function fullConfig(device) {
     cfg.mac = (device && device.mac) || DEFAULT_CONFIG.mac;
     cfg.ip = (device && device.ip) || DEFAULT_CONFIG.ip;
     cfg.port = (device && typeof device.port === 'number') ? device.port : DEFAULT_CONFIG.port;
+    cfg.enableWake = (device && typeof device.enableWake === 'boolean') ? device.enableWake : DEFAULT_CONFIG.enableWake;
+    cfg.enableVolume = (device && typeof device.enableVolume === 'boolean') ? device.enableVolume : DEFAULT_CONFIG.enableVolume;
     cfg._id = device && device._id;
     return cfg;
 }
@@ -318,6 +333,8 @@ function saveConfig(cfg, cb) {
         obj.mac = (cfg.mac || DEFAULT_CONFIG.mac).toString();
         obj.ip = (cfg.ip || DEFAULT_CONFIG.ip).toString();
         obj.port = typeof cfg.port === 'number' ? cfg.port : DEFAULT_CONFIG.port;
+        obj.enableWake = typeof cfg.enableWake === 'boolean' ? cfg.enableWake : DEFAULT_CONFIG.enableWake;
+        obj.enableVolume = typeof cfg.enableVolume === 'boolean' ? cfg.enableVolume : DEFAULT_CONFIG.enableVolume;
 
         configCache = obj;
 
@@ -607,6 +624,7 @@ function ackPowerPrepare(ackMethod, triggerMethod, timestamp) {
 var lastTriggerAt = 0;
 
 function triggerWake(reason, detail) {
+    if (!FEATURE.wake) { return; }
     var now = Date.now();
     if (now - lastTriggerAt < 30000) {
         console.log('power trigger ignored (duplicate): ' + reason);
@@ -730,22 +748,83 @@ function ensurePersistActivity() {
     }, 8000);
 }
 
-registerIncomingHooks();
-keepResident();
-ensurePersistActivity();
-registerPowerTriggers();
-loadVolumeTargets(function () {
-    applySchedule(true);
-    subscribeVolume();
-    scheduleBoundaryCheck();
-});
-
-setInterval(function () {
+function startWakeFeature() {
+    if (FEATURE.wake) { return; }
+    FEATURE.wake = true;
+    keepResident();
+    ensurePersistActivity();
     registerPowerTriggers();
-}, 60 * 1000);
+    if (!wakeFeatureInterval) {
+        wakeFeatureInterval = setInterval(function () {
+            if (FEATURE.wake) { registerPowerTriggers(); }
+        }, 60 * 1000);
+    }
+    console.log('wake feature enabled');
+}
+
+function stopWakeFeature() {
+    if (!FEATURE.wake) { return; }
+    FEATURE.wake = false;
+    if (wakeFeatureInterval) {
+        clearInterval(wakeFeatureInterval);
+        wakeFeatureInterval = null;
+    }
+    // Force re-subscription on next enable so a re-enabled switch starts fresh.
+    for (var m in power.triggers) {
+        if (Object.prototype.hasOwnProperty.call(power.triggers, m) && power.triggers[m]) {
+            power.triggers[m].subscribed = false;
+        }
+    }
+    console.log('wake feature disabled');
+}
+
+function startVolumeFeature() {
+    if (volumeStarted) { return; }
+    volumeStarted = true;
+    keepResident();
+    loadVolumeTargets(function () {
+        applySchedule(true);
+        subscribeVolume();
+        scheduleBoundaryCheck();
+    });
+    console.log('volume feature enabled');
+}
+
+function stopVolumeFeature() {
+    if (!volumeStarted) { return; }
+    volumeStarted = false;
+    if (boundaryTimer) {
+        clearTimeout(boundaryTimer);
+        boundaryTimer = null;
+    }
+    if (volumeSubscription) {
+        try { volumeSubscription.cancel(); } catch (e) { }
+        volumeSubscription = null;
+        volumeSubOk = false;
+    }
+    scheduleState.lastAppliedVolume = null;
+    console.log('volume feature disabled');
+}
+
+// Read the feature switches from a config doc and start/stop accordingly.
+function syncFeatures(cfg) {
+    var wake = !cfg || cfg.enableWake !== false;
+    var volume = !cfg || cfg.enableVolume !== false;
+    if (wake) { startWakeFeature(); } else { stopWakeFeature(); }
+    if (volume) { startVolumeFeature(); } else { stopVolumeFeature(); }
+}
+
+registerIncomingHooks();
+loadConfig(function (err, cfg) {
+    syncFeatures(cfg);
+});
 
 service.register('wake', function (message) {
     var p = message.payload || {};
+    if (!FEATURE.wake) {
+        message.respond({ returnValue: false, errorText: '魔术包唤醒功能已关闭', errorCode: -2 });
+        return;
+    }
     loadConfig(function (err, cfg) {
         if (p.mac) { cfg.mac = p.mac; }
         if (p.ip) { cfg.ip = p.ip; }
@@ -786,6 +865,8 @@ service.register('setConfig', function (message) {
             if (saveErr) {
                 message.respond({ returnValue: false, errorText: String(saveErr.errorText || saveErr) });
             } else {
+                // Apply feature switches immediately so a change takes effect without a restart.
+                syncFeatures(saved);
                 message.respond({ returnValue: true, config: saved });
             }
         });
@@ -802,6 +883,7 @@ service.register('getStatus', function (message) {
         uptimeSec: Math.round((Date.now() - startedAt) / 1000),
         resident: resident,
         power: power,
+        features: { wake: FEATURE.wake, volume: volumeStarted },
         schedule: {
             volume: scheduleState.lastAppliedVolume,
             targets: scheduleState.targets,

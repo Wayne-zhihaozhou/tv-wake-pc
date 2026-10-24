@@ -175,6 +175,30 @@ button:focus,
 
 .btn:focus { border-color: #2f7dff; }
 
+.toggle {
+    font-size: 20px;
+    padding: 14px 28px;
+    border-radius: 8px;
+    border: 1px solid #2a3948;
+    background: #23303d;
+    color: #e8edf4;
+    cursor: pointer;
+    min-width: 260px;
+}
+
+.toggle[aria-pressed="true"] {
+    background: #2f7dff;
+    border-color: #4d94ff;
+    color: #fff;
+}
+
+.toggle:focus { border-color: #4d94ff; }
+
+button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
 .status {
     font-size: 16px;
     color: #8fa1b3;
