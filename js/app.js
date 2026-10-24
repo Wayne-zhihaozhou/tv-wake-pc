@@ -392,8 +392,8 @@
     function getFocusOrder() {
         var sel = [
             els.device, els.scan, els.mac, els.ip, els.port,
-            els.enableWake, els.enableVolume,
-            els.save, els.exit, els.wake
+            els.save, els.exit, els.wake,
+            els.enableWake, els.enableVolume
         ];
         return sel.filter(function (el) { return el && el.offsetParent !== null && !el.disabled; });
     }
