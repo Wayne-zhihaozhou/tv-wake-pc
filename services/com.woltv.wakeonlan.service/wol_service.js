@@ -194,7 +194,7 @@ function recordUserVolume(hour, value) {
     persistVolumeTargets();
 }
 
-function applySchedule(force) {
+function applySchedule(force, cb) {
     if (!volumeStarted) { return; }
     var now = new Date();
     var hour = now.getHours();
@@ -202,6 +202,7 @@ function applySchedule(force) {
         scheduleState.lastCheck = Date.now();
         if (cur === null) {
             rememberScheduleError('getVolume failed');
+            if (cb) { cb(false); }
             return;
         }
         if (!force && scheduleState.lastAppliedVolume !== null && cur !== scheduleState.lastAppliedVolume) {
@@ -209,17 +210,42 @@ function applySchedule(force) {
         }
         scheduleState.lastAppliedVolume = cur;
         var target = targetVolume(now);
-        if (cur === target) { return; }
+        if (cur === target) {
+            if (cb) { cb(true); }
+            return;
+        }
         setVolume(target, function (res) {
             if (res && res.returnValue) {
                 scheduleState.lastAppliedVolume = target;
                 scheduleState.lastApplied = Date.now();
                 scheduleState.applied = 'volume=' + target;
                 console.log('schedule applied: volume=' + target);
+                if (cb) { cb(true); }
             } else {
                 rememberScheduleError('volume failed: ' + (res && res.errorText || ''));
+                if (cb) { cb(false); }
             }
         });
+    });
+}
+
+// 开机/服务拉起时立即调节一次音量：不等整点。
+// 若开机瞬间 audio 服务尚未就绪导致读取/设置失败，每 10 秒重试，
+// 最多重试 6 分钟；仍失败则交给整点边界定时兜底（下一个整点再调）。
+var INITIAL_APPLY_RETRY_MS = 10 * 1000;
+var INITIAL_APPLY_MAX_TRIES = 36;
+var initialApplyTries = 0;
+
+function applyInitialVolume() {
+    if (!volumeStarted) { return; }
+    applySchedule(true, function (ok) {
+        if (ok) { return; }
+        initialApplyTries++;
+        if (initialApplyTries >= INITIAL_APPLY_MAX_TRIES) {
+            console.log('initial volume apply still failing; fallback to next hour boundary');
+            return;
+        }
+        setTimeout(applyInitialVolume, INITIAL_APPLY_RETRY_MS);
     });
 }
 
@@ -787,8 +813,9 @@ function startVolumeFeature() {
     if (volumeStarted) { return; }
     volumeStarted = true;
     keepResident();
+    initialApplyTries = 0;
     loadVolumeTargets(function () {
-        applySchedule(true);
+        applyInitialVolume();
         subscribeVolume();
         scheduleBoundaryCheck();
     });
