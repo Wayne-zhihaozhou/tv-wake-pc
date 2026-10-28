@@ -31,7 +31,6 @@ var DEFAULT_CONFIG = {
 // whether the corresponding subscriptions/timers are actually running.
 var FEATURE = { wake: true, volume: true };
 var wakeStarted = false;
-var wakeFeatureInterval = null;
 var volumeStarted = false;
 
 var service = new Service(SERVICE_NAME);
@@ -229,23 +228,25 @@ function applySchedule(force, cb) {
     });
 }
 
-// 开机/服务拉起时立即调节一次音量：不等整点。
-// 若开机瞬间 audio 服务尚未就绪导致读取/设置失败，每 10 秒重试，
+// 立即按当前小时调节一次音量，不等整点。调用时机：
+//   ① 服务启动（开机拉起 / 常驻活动恢复）；
+//   ② 电视开机 / 从待机恢复（tvpower 事件）。
+// 若当时 audio 服务尚未就绪导致读取/设置失败，每 10 秒重试，
 // 最多重试 6 分钟；仍失败则交给整点边界定时兜底（下一个整点再调）。
-var INITIAL_APPLY_RETRY_MS = 10 * 1000;
-var INITIAL_APPLY_MAX_TRIES = 36;
-var initialApplyTries = 0;
+var VOLUME_APPLY_RETRY_MS = 10 * 1000;
+var VOLUME_APPLY_MAX_TRIES = 36;
+var volumeApplyTries = 0;
 
-function applyInitialVolume() {
+function applyVolumeNow() {
     if (!volumeStarted) { return; }
     applySchedule(true, function (ok) {
         if (ok) { return; }
-        initialApplyTries++;
-        if (initialApplyTries >= INITIAL_APPLY_MAX_TRIES) {
-            console.log('initial volume apply still failing; fallback to next hour boundary');
+        volumeApplyTries++;
+        if (volumeApplyTries >= VOLUME_APPLY_MAX_TRIES) {
+            console.log('volume apply still failing; fallback to next hour boundary');
             return;
         }
-        setTimeout(applyInitialVolume, INITIAL_APPLY_RETRY_MS);
+        setTimeout(applyVolumeNow, VOLUME_APPLY_RETRY_MS);
     });
 }
 
@@ -698,6 +699,9 @@ function registerPowerTrigger(trigger) {
         }
         state.events++;
         console.log('power event ' + trigger.method + ': ' + JSON.stringify(payload));
+        // 电视开机/从待机恢复 → 立即调节一次音量（不等整点；audio 未就绪会自动重试）。
+        // 服务常驻跨待机，启动时的调节不会在开机时再跑，必须靠这个事件触发。
+        if (volumeStarted) { applyVolumeNow(); }
         if (!trigger.wake) { return; }
         ackPowerPrepare(trigger.ack, trigger.method, payload.timestamp);
         rememberEvent('收到 ' + trigger.method);
@@ -716,6 +720,26 @@ function registerPowerTriggers() {
     }
 }
 
+// tvpower 开机/恢复订阅由唤醒与音量两个功能共享：
+// 任一开启即注册，订阅断开后由 watchdog 每 60 秒自动补上。
+var powerWatchdog = null;
+
+function ensurePowerTriggers() {
+    registerPowerTriggers();
+    if (!powerWatchdog) {
+        powerWatchdog = setInterval(function () {
+            if (wakeStarted || volumeStarted) { registerPowerTriggers(); }
+        }, 60 * 1000);
+    }
+}
+
+function maybeStopPowerTriggers() {
+    if (!wakeStarted && !volumeStarted && powerWatchdog) {
+        clearInterval(powerWatchdog);
+        powerWatchdog = null;
+    }
+}
+
 function registerIncomingHooks() {
     var hooks = [
         { method: 'registerPreparePowerOn', ack: 'responsePreparePowerOn', wake: true },
@@ -728,6 +752,8 @@ function registerIncomingHooks() {
             var payload = (message && message.payload) || {};
             console.log('incoming ' + hook.method + ': ' + JSON.stringify(payload));
             message.respond({ returnValue: true, received: hook.method });
+            // 电视开机/从待机恢复 → 立即调节一次音量（不等整点）
+            if (volumeStarted) { applyVolumeNow(); }
             if (hook.wake) {
                 ackPowerPrepare(hook.ack, hook.method, payload.timestamp);
                 triggerWake(hook.method.indexOf('Resume') >= 0 ? 'resume' : 'powerOn', payload);
@@ -783,12 +809,7 @@ function startWakeFeature() {
     FEATURE.wake = true;
     keepResident();
     ensurePersistActivity();
-    registerPowerTriggers();
-    if (!wakeFeatureInterval) {
-        wakeFeatureInterval = setInterval(function () {
-            if (wakeStarted) { registerPowerTriggers(); }
-        }, 60 * 1000);
-    }
+    ensurePowerTriggers();
     console.log('wake feature enabled');
 }
 
@@ -796,16 +817,13 @@ function stopWakeFeature() {
     if (!wakeStarted) { return; }
     wakeStarted = false;
     FEATURE.wake = false;
-    if (wakeFeatureInterval) {
-        clearInterval(wakeFeatureInterval);
-        wakeFeatureInterval = null;
-    }
     // Force re-subscription on next enable so a re-enabled switch starts fresh.
     for (var m in power.triggers) {
         if (Object.prototype.hasOwnProperty.call(power.triggers, m) && power.triggers[m]) {
             power.triggers[m].subscribed = false;
         }
     }
+    maybeStopPowerTriggers();
     console.log('wake feature disabled');
 }
 
@@ -813,9 +831,10 @@ function startVolumeFeature() {
     if (volumeStarted) { return; }
     volumeStarted = true;
     keepResident();
-    initialApplyTries = 0;
+    ensurePowerTriggers(); // 电视开机/恢复事件 → 立即调节音量（即使关闭了唤醒也生效）
+    volumeApplyTries = 0;
     loadVolumeTargets(function () {
-        applyInitialVolume();
+        applyVolumeNow();
         subscribeVolume();
         scheduleBoundaryCheck();
     });
@@ -835,6 +854,7 @@ function stopVolumeFeature() {
         volumeSubOk = false;
     }
     scheduleState.lastAppliedVolume = null;
+    maybeStopPowerTriggers();
     console.log('volume feature disabled');
 }
 
