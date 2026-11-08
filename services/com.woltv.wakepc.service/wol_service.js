@@ -4,9 +4,9 @@ var os = require('os');
 var fs = require('fs');
 var net = require('net');
 
-var SERVICE_NAME = 'com.woltv.wakeonlan.service';
+var SERVICE_NAME = 'com.woltv.wakepc.service';
 var DB_URI = 'luna://com.palm.db';
-var KIND = 'com.woltv.wakeonlan:1';
+var KIND = 'com.woltv.wakepc:1';
 var CONN_URI = 'luna://com.webos.service.connectionmanager';
 var TVPOWER_URI = 'luna://com.webos.service.tvpower/power';
 var ACTIVITY_URI = 'luna://com.palm.activitymanager';
@@ -83,7 +83,7 @@ var SCHEDULE = {
     volume: { startHour: 9, startMinute: 0, endHour: 22, endMinute: 0, onValue: 13, offValue: 7 }
 };
 
-var VOL_KIND = 'com.woltv.wakeonlan.volume:1';
+var VOL_KIND = 'com.woltv.wakepc.volume:1';
 var volumeCache = null;
 
 function defaultVolumeForHour(hour) {

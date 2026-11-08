@@ -1,5 +1,5 @@
-﻿# =============================================================
-#  Wake-on-LAN webOS 部署脚本 (v2)
+# =============================================================
+#  唤醒电脑（Wake PC）webOS 部署脚本 (v2)
 #
 #  为什么不再改路由表：
 #    本机装有 SecoClient（SVN Adapter V1.0）。它的公司内网和家里 LAN
@@ -451,7 +451,7 @@ try {
 
     # ---------- 7/8 打包 ----------
     Say "`n[7/8] 打包应用 ..."
-    $svcDir   = Join-Path $ProjectDir 'services\com.woltv.wakeonlan.service'
+    $svcDir   = Join-Path $ProjectDir 'services\com.woltv.wakepc.service'
     $dist     = Join-Path $ProjectDir 'dist'
     $stage    = Join-Path $env:TEMP ("wol-stage-" + [guid]::NewGuid().ToString('N'))
     $stageApp = Join-Path $stage 'app'
@@ -486,14 +486,14 @@ try {
         Fail "安装失败: $($inst.Trim())"; $summary += 'FAIL install'; exit 1
     }
     if ($inst -match 'Success|Installed|succeeded|already installed|existing') {
-        Ok "安装成功: com.woltv.wakeonlan"; $summary += 'OK install'
+        Ok "安装成功: com.woltv.wakepc"; $summary += 'OK install'
     } else {
         Fail "安装失败: $($inst.Trim())"; $summary += 'FAIL install'; exit 1
     }
 
     if (-not $SkipLaunch) {
         Say "`n[额外] 启动应用 ..."
-        $la = & ares-launch --device $Device com.woltv.wakeonlan 2>&1 | Out-String
+        $la = & ares-launch --device $Device com.woltv.wakepc 2>&1 | Out-String
         if ($la -match 'Success|launched|success') {
             Ok "应用已启动，请到电视上核对并保存配置"; $summary += 'OK launch'
         } else {
@@ -503,7 +503,7 @@ try {
 
     if ($TestWake) {
         Say "`n[额外] 尝试触发一次唤醒 (luna-send)..."
-        $w = & ares-shell --device $Device "luna-send -n 1 luna://com.woltv.wakeonlan.service/wake '{}'" 2>&1 | Out-String
+        $w = & ares-shell --device $Device "luna-send -n 1 luna://com.woltv.wakepc.service/wake '{}'" 2>&1 | Out-String
         Say "  $($w.Trim())"
     }
 
@@ -515,7 +515,7 @@ try {
 Say "`n================ 结果汇总 ================" -ForegroundColor Cyan
 $summary | ForEach-Object { Write-Host "  $_" }
 if (-not ($summary | Where-Object { $_ -like 'FAIL*' })) {
-    Say ">>> 全部成功！请到电视上打开「Wake on LAN」应用，核对 MAC/IP 并保存。" -ForegroundColor Green
+    Say ">>> 全部成功！请到电视上打开「唤醒电脑」应用，核对 MAC/IP 并保存。" -ForegroundColor Green
 } else {
     Say ">>> 存在失败项，请把上面输出发给我。" -ForegroundColor Yellow
 }

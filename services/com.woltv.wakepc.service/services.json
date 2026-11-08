@@ -1,9 +1,9 @@
 {
-    "id": "com.woltv.wakeonlan.service",
-    "description": "Wake on LAN Service",
+    "id": "com.woltv.wakepc.service",
+    "description": "Wake PC Service",
     "services": [
         {
-            "name": "com.woltv.wakeonlan.service",
+            "name": "com.woltv.wakepc.service",
             "description": "Sends Wake-on-LAN magic packets and stores configuration",
             "commands": [
                 {

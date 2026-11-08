@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var SERVICE = 'luna://com.woltv.wakeonlan.service';
+    var SERVICE = 'luna://com.woltv.wakepc.service';
 
     var els = {
         device: document.getElementById('device'),

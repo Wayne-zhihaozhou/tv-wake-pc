@@ -1,7 +1,7 @@
 {
-    "name": "com.woltv.wakeonlan.service",
+    "name": "com.woltv.wakepc.service",
     "version": "1.0.0",
-    "description": "Wake on LAN service for webOS TV",
+    "description": "Wake PC service for webOS TV",
     "main": "wol_service.js",
     "scripts": {
         "test": "echo \"Error: no test specified\" && exit 1"

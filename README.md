@@ -1,4 +1,4 @@
-# Wake on LAN for webOS TV
+# 唤醒电脑（Wake PC）
 
 在 LG webOS 电视上，**开机后自动向局域网内的电脑发送 Wake-on-LAN 魔术包**，实现「电视一开机，电脑就被唤醒」。
 
@@ -29,7 +29,7 @@
 
 ```
 电视开机
-   ├─ 冷启动   → persist Activity → luna://com.woltv.wakeonlan.service/wake
+   ├─ 冷启动   → persist Activity → luna://com.woltv.wakepc.service/wake
    └─ 快速启动+ → tvpower 推送 preparePowerOn → 常驻服务应答 → 发送魔术包
                         │
                         ▼
@@ -50,7 +50,7 @@
 ├─ js/app.js                  前端逻辑（PalmServiceBridge 调用服务、遥控器焦点管理）
 ├─ css/style.css              界面样式
 ├─ services/
-│  └─ com.woltv.wakeonlan.service/
+│  └─ com.woltv.wakepc.service/
 │     ├─ wol_service.js       后台 Luna 服务（魔术包发送、开机订阅、配置存储）
 │     ├─ services.json        Luna 方法声明
 │     └─ package.json         服务包元数据
@@ -60,7 +60,7 @@
 │  ├─ 开发者文档.md            面向开发者的架构、API、构建与开发约定
 │  ├─ 使用者文档.md            面向用户的安装、部署与使用指南
 │  └─ 探索经验/               真实排障与实机探测笔记
-├─ deploy-wakeonlan.ps1       打包 + 安装 + 启动一站式部署脚本（含本地中继绕开 VPN）
+├─ deploy.ps1                 打包 + 安装 + 启动一站式部署脚本（含本地中继绕开 VPN）
 ├─ listen-magic-packet.ps1    电脑端魔术包监听器（调试用）
 └─ copy-project.ps1           平铺导出项目文件（内部工具）
 ```
@@ -81,7 +81,7 @@ npm install -g @webos-tools/cli
 ### 一键部署
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy-wakeonlan.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1
 ```
 
 脚本会自动完成：检查 ares CLI → 定位本地网卡 → 测试电视连通性 → 启动本地中继并指向电视 → 获取 SSH 密钥 → 打包（注入提交哈希）→ 安装 → 启动应用。
@@ -92,7 +92,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy-wakeonlan.ps1
 
 ## 使用方式
 
-1. 在电视上打开 **Wake on LAN** 应用。
+1. 在电视上打开 **唤醒电脑** 应用。
 2. 点 **「扫描设备」** 让电视自动列出局域网内在线电脑，选择目标；或直接在 **MAC 地址 / 目标 IP / 端口** 中手动填写。
 3. 点 **「保存」** 写入配置。
 4. 点 **「立即唤醒（测试）」** 验证电脑能被唤醒。
@@ -135,4 +135,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy-wakeonlan.ps1
 
 ## 许可证
 
-[MIT](./LICENSE) © Wake on LAN webOS contributors
+[MIT](./LICENSE) © tv-wake-pc contributors

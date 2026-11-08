@@ -95,7 +95,7 @@ ares 系列工具不支持绑源地址，只能沿用部署脚本那套中继：
 | `ares-shell` | ❌ | `This command is not supported by current profile` |
 | `ares-pull` / `ares-push` | ❌ | 同上。**想读电视上的文件请用 §2.1 的 ssh** |
 
-> 连带影响：`deploy-wakeonlan.ps1` 的 `-TestWake` 开关依赖 `ares-shell`，**在电视上永远是无效代码**。要触发服务，用 ssh 跑 `luna-send-pub`（见 §5.3）。
+> 连带影响：`deploy.ps1` 的 `-TestWake` 开关依赖 `ares-shell`，**在电视上永远是无效代码**。要触发服务，用 ssh 跑 `luna-send-pub`（见 §5.3）。
 
 ## 3. 电视文件系统实测地图
 
@@ -146,13 +146,13 @@ ssh -b 192.168.1.6 -i "$env:USERPROFILE\.ssh\lg_webos" -p 9922 -o StrictHostKeyC
 ```
 
 ```sh
-cd /media/developer/apps/usr/palm/applications/com.woltv.wakeonlan && \
+cd /media/developer/apps/usr/palm/applications/com.woltv.wakepc && \
   ls -l && md5sum icon.png largeIcon.png appinfo.json && grep -E 'version|buildHash' appinfo.json
 ```
 
 两边哈希一致 = 电视上确实是这份文件。**排查"改了没生效"类问题的第一件事就是这个**，能一句话把"打包/安装的问题"和"渲染/缓存的问题"分开。
 
-`appinfo.json` 里的 `buildHash` 由 `deploy-wakeonlan.ps1` 注入，等于**电视上当前运行的是哪个提交**。
+`appinfo.json` 里的 `buildHash` 由 `deploy.ps1` 注入，等于**电视上当前运行的是哪个提交**。
 
 ### 5.2 看安装记录
 
@@ -165,7 +165,7 @@ cat /media/developer/apps/usr/palm/packages/<appId>/packageinfo.json
 
 ```sh
 # 跑自己的服务
-/usr/bin/luna-send-pub -n 1 -f luna://com.woltv.wakeonlan.service/getStatus '{}' < /dev/null
+/usr/bin/luna-send-pub -n 1 -f luna://com.woltv.wakepc.service/getStatus '{}' < /dev/null
 ```
 
 **`< /dev/null` 不能省**：`luna-send-pub` 会从 stdin 读 payload，如果脚本是管道喂给 `sh` 的，它会把后续脚本一起吃掉，表现为"命令跑了但没有任何输出"。
@@ -237,7 +237,7 @@ $errs.Count    # 必须是 0
 
 **当前状态**：`0.0.8`（32bpp ARGB）已部署并核对哈希一致，**尚未拿到电视端的人工确认**。
 
-**若仍不生效**，下一步是换 app id（启动器按 app id 缓存图标）。改动面：`appinfo.json` 的 `id`、`services.json` 的 `id` 与 `services[].name`、服务目录名、`services/.../package.json` 的 `name`、`wol_service.js` 的 `SERVICE_NAME` 与 `KIND`、`js/app.js` 的 `SERVICE`、以及 `deploy-wakeonlan.ps1` 中 4 处引用。
+**若仍不生效**，下一步是换 app id（启动器按 app id 缓存图标）。改动面：`appinfo.json` 的 `id`、`services.json` 的 `id` 与 `services[].name`、服务目录名、`services/.../package.json` 的 `name`、`wol_service.js` 的 `SERVICE_NAME` 与 `KIND`、`js/app.js` 的 `SERVICE`、以及 `deploy.ps1` 中 4 处引用。
 
 **这个案例的通用教训**：
 
@@ -250,6 +250,6 @@ $errs.Count    # 必须是 0
 | 文件 | 作用 |
 |---|---|
 | `tools/tv-shell.ps1` | 走中继执行任意 ares 命令的只读诊断工具 |
-| `deploy-wakeonlan.ps1` | 打包部署；含中继与 ares 配置改写/还原的完整实现 |
+| `deploy.ps1` | 打包部署；含中继与 ares 配置改写/还原的完整实现 |
 | `docs/探索经验/TROUBLESHOOTING.md` | SecoClient 网段冲突与源地址绑定的原理、诊断方法论 |
 | `docs/探索经验/快速启动开机唤醒-探索记录.md` | 服务常驻、tvpowerd 订阅等电视端调试经验 |
