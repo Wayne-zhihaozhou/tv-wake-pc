@@ -1,19 +1,4 @@
-# =============================================================
-#  唤醒电脑（Wake PC）webOS 部署脚本 (v2)
-#
-#  为什么不再改路由表：
-#    本机装有 SecoClient（SVN Adapter V1.0）。它的公司内网和家里 LAN
-#    都用 192.168.1.0/24，SecoClient 每隔 2~3 秒就会重新注入
-#    192.168.1.0/24 和 192.168.1.4/32 路由（metric 0，网卡 metric 1），
-#    并把被改过的网卡 metric 复位。实测即使在 metric 完全打平的情况下，
-#    Windows 依然优先走 VPN 网卡 —— 所以「加路由绕过 VPN」这条路走不通。
-#
-#  现在的做法：
-#    起一个只监听 127.0.0.1 的 TCP 中继，由它**绑定本地物理网卡 IP**
-#    去连电视。Windows 在 socket 绑定源地址时会强制走该网卡，
-#    从而完全绕开路由表，也不影响公司 VPN。部署结束自动还原 ares 配置。
-# =============================================================
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$TvIp       = '192.168.1.4',
     [int]   $TvPort     = 9922,
@@ -28,10 +13,8 @@ param(
 $ErrorActionPreference = 'Continue'
 $summary = @()
 
-# -NoPause: skip the closing pause prompt (for automation / CI)
 if ($NoPause) { $env:WOL_NO_PAUSE = '1' }
 
-# === 中间态（Cleanup 要还原它们） ===
 $script:RelayListener = $null
 $script:RelayPs       = $null
 $script:RelayRs       = $null
@@ -40,7 +23,6 @@ $script:CfgBackup     = $null
 $script:CfgExisted    = $false
 $script:Cleaned       = $false
 
-# === 防闪退：任何退出路径都暂停 ===
 Register-EngineEvent PowerShell.Exiting -Action {
     if ($env:WOL_NO_PAUSE) { return }
     Write-Host ""
@@ -48,7 +30,6 @@ Register-EngineEvent PowerShell.Exiting -Action {
     try { Read-Host } catch {}
 } | Out-Null
 
-# === 输出小工具 ===
 function Say($msg) { Write-Host $msg }
 function Ok($msg)  { Write-Host ("  [OK]   " + $msg) -ForegroundColor Green }
 function Fail($msg){ Write-Host ("  [FAIL] " + $msg) -ForegroundColor Red }
@@ -62,14 +43,10 @@ trap {
     exit 1
 }
 
-# =============================================================
-#  清理：关闭中继 + 还原 ares 配置（幂等，可重复调用）
-# =============================================================
 function Invoke-Cleanup {
     if ($script:Cleaned) { return }
     $script:Cleaned = $true
 
-    # 1) 关闭中继
     if ($script:RelayListener) {
         try { $script:RelayListener.Stop() } catch {}
         $script:RelayListener = $null
@@ -86,7 +63,6 @@ function Invoke-Cleanup {
         $script:RelayRs = $null
     }
 
-    # 2) 还原 ares 设备配置
     if ($script:CfgPath -and $script:CfgBackup) {
         try {
             if ($script:CfgExisted) {
@@ -105,11 +81,6 @@ function Invoke-Cleanup {
     }
 }
 
-# =============================================================
-#  网络工具
-# =============================================================
-
-# 找到与目标 IP 同网段的本地物理网卡（自动排除 SVN/VPN/虚拟网卡）
 function Get-LocalAddressFor([string]$TargetIp) {
     $target = $null
     try { $target = [System.Net.IPAddress]::Parse($TargetIp) } catch { return $null }
@@ -137,7 +108,6 @@ function Get-LocalAddressFor([string]$TargetIp) {
     return $null
 }
 
-# 绑定源地址测端口：Windows 会强制走该源地址所属网卡，绕开路由表
 function Test-TvPort([string]$SourceIp, [string]$TargetIp, [int]$Port, [int]$TimeoutMs = 2500) {
     $sock = $null
     try {
@@ -156,7 +126,6 @@ function Test-TvPort([string]$SourceIp, [string]$TargetIp, [int]$Port, [int]$Tim
     }
 }
 
-# 读一次 SSH banner，确认中继确实接到了电视
 function Get-RelayBanner([int]$Port, [int]$TimeoutMs = 5000) {
     $c = $null
     try {
@@ -176,11 +145,6 @@ function Get-RelayBanner([int]$Port, [int]$TimeoutMs = 5000) {
     }
 }
 
-# =============================================================
-#  中继：127.0.0.1:<随机端口> -> 电视:<TvPort>（源地址绑定本地网卡）
-#  用 runspace 后台运行；AcceptTcpClientAsync + CopyToAsync 都是
-#  纯 .NET 异步，不需要脚本块回调，可并发处理多条连接。
-# =============================================================
 function Start-TvRelay([string]$SourceIp, [string]$TargetIp, [int]$TargetPort) {
     $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
     $listener.Start()
@@ -220,10 +184,9 @@ function Start-TvRelay([string]$SourceIp, [string]$TargetIp, [int]$TargetPort) {
                     $accept = $listener.AcceptTcpClientAsync()
                 }
             } catch {
-                break   # listener.Stop() 被调用，正常退出
+                break
             }
 
-            # 任一方向结束就关掉这对 socket，避免连接堆积
             for ($i = $pending.Count - 1; $i -ge 0; $i--) {
                 $p = $pending[$i]
                 if ($p.T1.IsCompleted -or $p.T2.IsCompleted) {
@@ -243,9 +206,6 @@ function Start-TvRelay([string]$SourceIp, [string]$TargetIp, [int]$TargetPort) {
     return $port
 }
 
-# =============================================================
-#  ares 设备配置
-# =============================================================
 function Get-ActiveNovacomConfig {
     $prof = (& ares-config -c 2>&1 | Out-String).Trim()
     if ($prof -match 'profile set to\s+(\S+)') { $prof = $Matches[1] }
@@ -266,7 +226,6 @@ function Save-AresDevices([string]$CfgPath, $json) {
     [System.IO.File]::WriteAllText($CfgPath, $txt, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-# 把设备的 host/port 指向本地中继；返回该设备的 ssh 私钥名
 function Set-AresEndpoint([string]$CfgPath, [string]$DeviceName, [string]$HostName, [int]$Port) {
     $json = Read-AresDevices $CfgPath
     if (-not $json) { return $null }
@@ -286,9 +245,6 @@ function Set-AresEndpoint([string]$CfgPath, [string]$DeviceName, [string]$HostNa
     return $keyName
 }
 
-# =============================================================
-#  其它
-# =============================================================
 function Get-Passphrase {
     if ($Passphrase) { return $Passphrase }
     if ($env:WEBOS_PASSPHRASE) { return $env:WEBOS_PASSPHRASE }
@@ -311,16 +267,14 @@ function Get-CommitHash {
 function Set-BuildHash([string]$stageApp, [string]$hash) {
     $staged = Join-Path $stageApp 'appinfo.json'
     if (-not (Test-Path $staged)) { return $false }
-    $info = Get-Content $staged -Raw | ConvertFrom-Json
+    $raw = [System.IO.File]::ReadAllText($staged, [System.Text.Encoding]::UTF8)
+    $info = $raw | ConvertFrom-Json
     $info | Add-Member -NotePropertyName 'buildHash' -NotePropertyValue $hash -Force
     $json = $info | ConvertTo-Json -Depth 10
-    [System.IO.File]::WriteAllText($staged, $json, (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($staged, $json, (New-Object System.Text.UTF8Encoding($true)))
     return $true
 }
 
-# =============================================================
-#  主流程
-# =============================================================
 if (-not $ProjectDir) { $ProjectDir = $PSScriptRoot }
 if (-not $ProjectDir) { $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Definition }
 if (-not $ProjectDir) { $ProjectDir = (Get-Location).Path }
@@ -332,7 +286,6 @@ Write-Host "==============================================" -ForegroundColor Cya
 
 try {
 
-    # ---------- 1/8 ares ----------
     Say "`n[1/8] 检查 ares CLI..."
     if (Get-Command ares -ErrorAction SilentlyContinue) {
         Ok "ares 可用: $((ares -V) 2>&1)"; $summary += 'OK ares'
@@ -341,7 +294,6 @@ try {
         $summary += 'FAIL ares'; exit 1
     }
 
-    # ---------- 2/8 profile ----------
     Say "`n[2/8] 确保 ares profile=tv（webOS TV Dev Mode）..."
     $cur = (& ares-config -c 2>&1 | Out-String)
     if ($cur -notmatch '\btv\b') { & ares-config -p tv 2>&1 | Out-Null }
@@ -352,7 +304,6 @@ try {
         $summary += 'FAIL profile'; exit 1
     }
 
-    # ---------- 3/8 本地网卡 + 绕开 VPN 的可达性 ----------
     Say "`n[3/8] 定位本地网卡并直连测试 $TvIp`:$TvPort ..."
     $addr = Get-LocalAddressFor $TvIp
     if (-not $addr) {
@@ -362,7 +313,6 @@ try {
     $srcIp = $addr.IPAddress
     Ok "本地网卡: $srcIp/$($addr.PrefixLength)  (接口 $($addr.InterfaceIndex) / $($addr.InterfaceAlias))"
 
-    # 把 VPN 劫持情况讲清楚（只是诊断，不是报错）
     $chosen = (Find-NetRoute -RemoteIPAddress $TvIp -ErrorAction SilentlyContinue |
                Where-Object { $_.DestinationPrefix } | Select-Object -Last 1)
     if ($chosen -and $chosen.InterfaceIndex -ne $addr.InterfaceIndex) {
@@ -378,7 +328,6 @@ try {
     Ok "直连成功：$srcIp -> $TvIp`:$TvPort 端口开放"
     $summary += 'OK reach'
 
-    # ---------- 4/8 中继 + 切换 ares ----------
     Say "`n[4/8] 启动本地中继并把 ares 指向它 ..."
     $cfgPath = Get-ActiveNovacomConfig
     if (-not (Test-Path $cfgPath)) {
@@ -394,7 +343,6 @@ try {
         $summary += 'FAIL cfg'; exit 1
     }
 
-    # 备份配置，供 Cleanup 还原
     $script:CfgPath    = $cfgPath
     $script:CfgBackup  = "$cfgPath.wolbak"
     $script:CfgExisted = $true
@@ -408,7 +356,6 @@ try {
     }
     Ok "中继已启动: 127.0.0.1:$relayPort -> $TvIp`:$TvPort (源地址 $srcIp)"
 
-    # 自检：中继是否真的接到了电视的 SSH
     $banner = Get-RelayBanner $relayPort
     if ($banner -like 'SSH-*') {
         Ok "中继自检通过: $banner"; $summary += 'OK relay'
@@ -417,7 +364,6 @@ try {
         $summary += 'FAIL relay'; exit 1
     }
 
-    # ---------- 5/8 SSH 密钥 ----------
     Say "`n[5/8] 准备 SSH 密钥 ..."
     $keyPath = Join-Path $env:USERPROFILE (".ssh\$keyName")
     if (Test-Path $keyPath) {
@@ -438,7 +384,6 @@ try {
         Ok "取密钥成功"; $summary += 'OK key'
     }
 
-    # ---------- 6/8 验证连接 ----------
     Say "`n[6/8] 验证连接 (ares-device -i) ..."
     $info = & ares-device -i --device $Device 2>&1 | Out-String
     if ($info -match 'modelName|sdkVersion|boardType') {
@@ -449,7 +394,6 @@ try {
         $summary += 'FAIL connect'; exit 1
     }
 
-    # ---------- 7/8 打包 ----------
     Say "`n[7/8] 打包应用 ..."
     $svcDir   = Join-Path $ProjectDir 'services\com.woltv.wakepc.service'
     $dist     = Join-Path $ProjectDir 'dist'
@@ -479,7 +423,6 @@ try {
     if ($ipk) { Ok "打包完成: $($ipk.Name)"; $summary += 'OK package' }
     else { Fail "打包失败: $pkgOut"; $summary += 'FAIL package'; exit 1 }
 
-    # ---------- 8/8 安装 ----------
     Say "`n[8/8] 安装应用到电视 ..."
     $inst = & ares-install --device $Device $ipk.FullName 2>&1 | Out-String
     if ($inst -match 'Connection timed out|ERR!|refused|unreachable') {
@@ -511,7 +454,6 @@ try {
     Invoke-Cleanup
 }
 
-# ---------- 汇总 ----------
 Say "`n================ 结果汇总 ================" -ForegroundColor Cyan
 $summary | ForEach-Object { Write-Host "  $_" }
 if (-not ($summary | Where-Object { $_ -like 'FAIL*' })) {
@@ -519,4 +461,3 @@ if (-not ($summary | Where-Object { $_ -like 'FAIL*' })) {
 } else {
     Say ">>> 存在失败项，请把上面输出发给我。" -ForegroundColor Yellow
 }
-
