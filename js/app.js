@@ -15,8 +15,7 @@
         wake: document.getElementById('btnWake'),
         status: document.getElementById('status'),
         powerDiag: document.getElementById('powerDiag'),
-        enableWake: document.getElementById('enableWake'),
-        enableVolume: document.getElementById('enableVolume')
+        enableWake: document.getElementById('enableWake')
     };
 
     var devicesCache = [];
@@ -248,7 +247,6 @@
         els.port.value = (c && typeof c.port === 'number') ? c.port : 9;
         ensureMacDefault();
         setToggle(els.enableWake, !c || c.enableWake !== false);
-        setToggle(els.enableVolume, !c || c.enableVolume !== false);
         updateWakeControls();
     }
 
@@ -277,8 +275,7 @@
             mac: els.mac.value.trim(),
             ip: els.ip.value.trim() || '255.255.255.255',
             port: parseInt(els.port.value, 10) || 9,
-            enableWake: els.enableWake ? els.enableWake.getAttribute('aria-pressed') === 'true' : true,
-            enableVolume: els.enableVolume ? els.enableVolume.getAttribute('aria-pressed') === 'true' : true
+            enableWake: els.enableWake ? els.enableWake.getAttribute('aria-pressed') === 'true' : true
         };
     }
 
@@ -393,7 +390,7 @@
         var sel = [
             els.device, els.scan, els.mac, els.ip, els.port,
             els.save, els.exit, els.wake,
-            els.enableWake, els.enableVolume
+            els.enableWake
         ];
         return sel.filter(function (el) { return el && el.offsetParent !== null && !el.disabled; });
     }
@@ -500,7 +497,6 @@
         });
     }
     wireToggle(els.enableWake, '魔术包唤醒功能');
-    wireToggle(els.enableVolume, '调节音量功能');
 
     loadConfig();
     loadBuildInfo();

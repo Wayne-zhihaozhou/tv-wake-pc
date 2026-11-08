@@ -1,4 +1,4 @@
-﻿{
+{
     "id": "com.woltv.wakepc",
     "version": "0.0.9",
     "vendor": "WOL TV",
@@ -13,5 +13,5 @@
     "splashColor": "#10151c",
     "disableBackHistoryAPI": true,
     "handlesRelaunch": false,
-    "requiredACG": ["activity.operation", "database.operation", "network.query", "audio.operation"]
+    "requiredACG": ["activity.operation", "database.operation", "network.query"]
 }

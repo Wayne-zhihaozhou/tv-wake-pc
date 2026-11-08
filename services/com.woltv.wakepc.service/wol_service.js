@@ -10,7 +10,6 @@ var KIND = 'com.woltv.wakepc:1';
 var CONN_URI = 'luna://com.webos.service.connectionmanager';
 var TVPOWER_URI = 'luna://com.webos.service.tvpower/power';
 var ACTIVITY_URI = 'luna://com.palm.activitymanager';
-var AUDIO_URI = 'luna://com.webos.audio';
 
 var FLAGS = {
     broadcast: true
@@ -20,18 +19,16 @@ var DEFAULT_CONFIG = {
     mac: 'CC:28:AA:A7:B4:1F',
     ip: '255.255.255.255',
     port: 9,
-    enableWake: true,
-    enableVolume: true
+    enableWake: true
 };
 
-// Runtime feature switches (configured through the config doc).
-// When a feature is off, none of its code runs (no subscriptions, no timers),
+// Runtime feature switch (configured through the config doc).
+// When the feature is off, none of its code runs (no subscriptions, no timers),
 // so consumption is kept to a minimum.
-// FEATURE.wake holds the desired on/off state; wakeStarted/volumeStarted track
-// whether the corresponding subscriptions/timers are actually running.
-var FEATURE = { wake: true, volume: true };
+// FEATURE.wake holds the desired on/off state; wakeStarted tracks whether the
+// corresponding subscriptions/timers are actually running.
+var FEATURE = { wake: true };
 var wakeStarted = false;
-var volumeStarted = false;
 
 var service = new Service(SERVICE_NAME);
 var lastSend = { at: 0, ok: false, error: '', reason: '' };
@@ -79,246 +76,6 @@ function dbCall(method, parameters, cb, timeoutMs) {
     lunaCall(DB_URI, method, parameters, cb, timeoutMs);
 }
 
-var SCHEDULE = {
-    volume: { startHour: 9, startMinute: 0, endHour: 22, endMinute: 0, onValue: 13, offValue: 7 }
-};
-
-var VOL_KIND = 'com.woltv.wakepc.volume:1';
-var volumeCache = null;
-
-function defaultVolumeForHour(hour) {
-    var h = hour % 24;
-    var start = SCHEDULE.volume.startHour;
-    var end = SCHEDULE.volume.endHour;
-    if (start <= end) {
-        return (h >= start && h < end) ? SCHEDULE.volume.onValue : SCHEDULE.volume.offValue;
-    }
-    return (h >= start || h < end) ? SCHEDULE.volume.onValue : SCHEDULE.volume.offValue;
-}
-
-var scheduleState = {
-    targets: [],
-    lastAppliedVolume: null,
-    lastCheck: 0,
-    lastApplied: 0,
-    applied: '',
-    errors: []
-};
-
-function initTargets() {
-    if (scheduleState.targets.length === 24) { return; }
-    scheduleState.targets = [];
-    for (var h = 0; h < 24; h++) {
-        scheduleState.targets.push(defaultVolumeForHour(h));
-    }
-}
-
-function targetVolume(now) {
-    var h = now.getHours() % 24;
-    var stored = scheduleState.targets[h];
-    if (typeof stored === 'number') { return stored; }
-    return defaultVolumeForHour(h);
-}
-
-function setVolume(value, cb) {
-    lunaCall(AUDIO_URI, 'setVolume', { volume: value }, function (res) {
-        if (cb) { cb(res); }
-    }, 3000);
-}
-
-function getVolume(cb) {
-    lunaCall(AUDIO_URI, 'getVolume', {}, function (res) {
-        var v = (res && typeof res.volume === 'number') ? res.volume : null;
-        cb(v, res);
-    }, 3000);
-}
-
-function rememberScheduleError(text) {
-    scheduleState.errors.push(text);
-    if (scheduleState.errors.length > 12) { scheduleState.errors.shift(); }
-    console.log('schedule error: ' + text);
-}
-
-function ensureVolumeKind(cb) {
-    dbCall('putKind', {
-        id: VOL_KIND,
-        owner: SERVICE_NAME,
-        private: true,
-        indexes: [{ name: 'default', props: [{ name: '_kind' }] }]
-    }, function () {
-        cb();
-    });
-}
-
-function loadVolumeTargets(cb) {
-    initTargets();
-    dbCall('find', { query: { from: VOL_KIND } }, function (res) {
-        var raw = null;
-        if (res && res.returnValue && res.results && res.results.length > 0) {
-            raw = res.results[0];
-        }
-        volumeCache = raw || {};
-        if (volumeCache && typeof volumeCache.hours === 'object' && volumeCache.hours) {
-            for (var h = 0; h < 24; h++) {
-                var v = volumeCache.hours[h];
-                if (typeof v === 'number') { scheduleState.targets[h] = v; }
-            }
-        }
-        console.log('volume targets loaded: ' + scheduleState.targets.join(','));
-        if (cb) { cb(); }
-    });
-}
-
-function persistVolumeTargets() {
-    var obj = { _kind: VOL_KIND };
-    if (volumeCache && volumeCache._id) { obj._id = volumeCache._id; }
-    obj.hours = [];
-    for (var h = 0; h < 24; h++) {
-        obj.hours.push(scheduleState.targets[h]);
-    }
-    volumeCache = obj;
-    dbCall('put', { objects: [obj] }, function (res) {
-        if (res && res.returnValue) { return; }
-        ensureVolumeKind(function () {
-            dbCall('put', { objects: [obj] }, function () { });
-        });
-    });
-}
-
-function recordUserVolume(hour, value) {
-    var h = hour % 24;
-    if (scheduleState.targets[h] === value) { return; }
-    scheduleState.targets[h] = value;
-    console.log('learned user volume hour=' + h + ' value=' + value);
-    persistVolumeTargets();
-}
-
-function applySchedule(force, cb) {
-    if (!volumeStarted) { return; }
-    var now = new Date();
-    var hour = now.getHours();
-    getVolume(function (cur) {
-        scheduleState.lastCheck = Date.now();
-        if (cur === null) {
-            rememberScheduleError('getVolume failed');
-            if (cb) { cb(false); }
-            return;
-        }
-        if (!force && scheduleState.lastAppliedVolume !== null && cur !== scheduleState.lastAppliedVolume) {
-            recordUserVolume(hour, cur);
-        }
-        scheduleState.lastAppliedVolume = cur;
-        var target = targetVolume(now);
-        if (cur === target) {
-            if (cb) { cb(true); }
-            return;
-        }
-        setVolume(target, function (res) {
-            if (res && res.returnValue) {
-                scheduleState.lastAppliedVolume = target;
-                scheduleState.lastApplied = Date.now();
-                scheduleState.applied = 'volume=' + target;
-                console.log('schedule applied: volume=' + target);
-                if (cb) { cb(true); }
-            } else {
-                rememberScheduleError('volume failed: ' + (res && res.errorText || ''));
-                if (cb) { cb(false); }
-            }
-        });
-    });
-}
-
-// 立即按当前小时调节一次音量，不等整点。调用时机：
-//   ① 服务启动（开机拉起 / 常驻活动恢复）；
-//   ② 电视开机 / 从待机恢复（tvpower 事件）。
-// 若当时 audio 服务尚未就绪导致读取/设置失败，每 10 秒重试，
-// 最多重试 6 分钟；仍失败则交给整点边界定时兜底（下一个整点再调）。
-var VOLUME_APPLY_RETRY_MS = 10 * 1000;
-var VOLUME_APPLY_MAX_TRIES = 36;
-var volumeApplyTries = 0;
-
-function applyVolumeNow() {
-    if (!volumeStarted) { return; }
-    applySchedule(true, function (ok) {
-        if (ok) { return; }
-        volumeApplyTries++;
-        if (volumeApplyTries >= VOLUME_APPLY_MAX_TRIES) {
-            console.log('volume apply still failing; fallback to next hour boundary');
-            return;
-        }
-        setTimeout(applyVolumeNow, VOLUME_APPLY_RETRY_MS);
-    });
-}
-
-var volumeSubscription = null;
-var volumeSubOk = false;
-var volumeRetryDelay = 3000;
-
-function subscribeVolume() {
-    if (!volumeStarted) { return; }
-    if (volumeSubscription) { return; }
-    try {
-        volumeSubscription = service.subscribe(AUDIO_URI + '/getVolume', { subscribe: true });
-    } catch (e) {
-        rememberScheduleError('volume subscribe failed: ' + String(e && e.message || e));
-        scheduleVolumeRetry();
-        return;
-    }
-    volumeSubscription.on('response', function (message) {
-        var payload = (message && message.payload) || {};
-        if (payload.subscribed === true) {
-            if (!volumeSubOk) {
-                volumeSubOk = true;
-                volumeRetryDelay = 3000;
-                console.log('volume subscription established');
-            }
-            return;
-        }
-        if (typeof payload.volume === 'number') {
-            var cur = payload.volume;
-            var now = new Date();
-            var hour = now.getHours();
-            if (scheduleState.lastAppliedVolume !== null && cur !== scheduleState.lastAppliedVolume) {
-                recordUserVolume(hour, cur);
-            }
-            scheduleState.lastAppliedVolume = cur;
-            applySchedule(true);
-        }
-    });
-    volumeSubscription.on('cancel', function () {
-        volumeSubOk = false;
-        volumeSubscription = null;
-        console.log('volume subscription cancelled');
-        scheduleVolumeRetry();
-    });
-}
-
-function scheduleVolumeRetry() {
-    setTimeout(function () {
-        if (!volumeStarted) { return; }
-        if (!volumeSubOk && !volumeSubscription) {
-            volumeSubscription = null;
-            subscribeVolume();
-        }
-        volumeRetryDelay = Math.min(volumeRetryDelay * 2, 60000);
-    }, volumeRetryDelay);
-}
-
-var boundaryTimer = null;
-
-function scheduleBoundaryCheck() {
-    if (!volumeStarted) { return; }
-    if (boundaryTimer) { clearTimeout(boundaryTimer); }
-    var now = new Date();
-    var nextHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0, 0);
-    var delay = nextHour.getTime() - now.getTime();
-    if (delay < 0) { delay = 0; }
-    boundaryTimer = setTimeout(function () {
-        applySchedule(true);
-        scheduleBoundaryCheck();
-    }, delay);
-}
-
 function ensureKind(cb) {
     dbCall('putKind', {
         id: KIND,
@@ -338,7 +95,6 @@ function fullConfig(device) {
     cfg.ip = (device && device.ip) || DEFAULT_CONFIG.ip;
     cfg.port = (device && typeof device.port === 'number') ? device.port : DEFAULT_CONFIG.port;
     cfg.enableWake = (device && typeof device.enableWake === 'boolean') ? device.enableWake : DEFAULT_CONFIG.enableWake;
-    cfg.enableVolume = (device && typeof device.enableVolume === 'boolean') ? device.enableVolume : DEFAULT_CONFIG.enableVolume;
     cfg._id = device && device._id;
     return cfg;
 }
@@ -364,7 +120,6 @@ function saveConfig(cfg, cb) {
         obj.ip = (cfg.ip || DEFAULT_CONFIG.ip).toString();
         obj.port = typeof cfg.port === 'number' ? cfg.port : DEFAULT_CONFIG.port;
         obj.enableWake = typeof cfg.enableWake === 'boolean' ? cfg.enableWake : DEFAULT_CONFIG.enableWake;
-        obj.enableVolume = typeof cfg.enableVolume === 'boolean' ? cfg.enableVolume : DEFAULT_CONFIG.enableVolume;
 
         configCache = obj;
 
@@ -699,9 +454,6 @@ function registerPowerTrigger(trigger) {
         }
         state.events++;
         console.log('power event ' + trigger.method + ': ' + JSON.stringify(payload));
-        // 电视开机/从待机恢复 → 立即调节一次音量（不等整点；audio 未就绪会自动重试）。
-        // 服务常驻跨待机，启动时的调节不会在开机时再跑，必须靠这个事件触发。
-        if (volumeStarted) { applyVolumeNow(); }
         if (!trigger.wake) { return; }
         ackPowerPrepare(trigger.ack, trigger.method, payload.timestamp);
         rememberEvent('收到 ' + trigger.method);
@@ -720,21 +472,21 @@ function registerPowerTriggers() {
     }
 }
 
-// tvpower 开机/恢复订阅由唤醒与音量两个功能共享：
-// 任一开启即注册，订阅断开后由 watchdog 每 60 秒自动补上。
+// tvpower 开机/恢复订阅由唤醒功能持有：
+// 订阅断开后由 watchdog 每 60 秒自动补上。
 var powerWatchdog = null;
 
 function ensurePowerTriggers() {
     registerPowerTriggers();
     if (!powerWatchdog) {
         powerWatchdog = setInterval(function () {
-            if (wakeStarted || volumeStarted) { registerPowerTriggers(); }
+            if (wakeStarted) { registerPowerTriggers(); }
         }, 60 * 1000);
     }
 }
 
 function maybeStopPowerTriggers() {
-    if (!wakeStarted && !volumeStarted && powerWatchdog) {
+    if (!wakeStarted && powerWatchdog) {
         clearInterval(powerWatchdog);
         powerWatchdog = null;
     }
@@ -752,8 +504,6 @@ function registerIncomingHooks() {
             var payload = (message && message.payload) || {};
             console.log('incoming ' + hook.method + ': ' + JSON.stringify(payload));
             message.respond({ returnValue: true, received: hook.method });
-            // 电视开机/从待机恢复 → 立即调节一次音量（不等整点）
-            if (volumeStarted) { applyVolumeNow(); }
             if (hook.wake) {
                 ackPowerPrepare(hook.ack, hook.method, payload.timestamp);
                 triggerWake(hook.method.indexOf('Resume') >= 0 ? 'resume' : 'powerOn', payload);
@@ -827,43 +577,9 @@ function stopWakeFeature() {
     console.log('wake feature disabled');
 }
 
-function startVolumeFeature() {
-    if (volumeStarted) { return; }
-    volumeStarted = true;
-    keepResident();
-    ensurePowerTriggers(); // 电视开机/恢复事件 → 立即调节音量（即使关闭了唤醒也生效）
-    volumeApplyTries = 0;
-    loadVolumeTargets(function () {
-        applyVolumeNow();
-        subscribeVolume();
-        scheduleBoundaryCheck();
-    });
-    console.log('volume feature enabled');
-}
-
-function stopVolumeFeature() {
-    if (!volumeStarted) { return; }
-    volumeStarted = false;
-    if (boundaryTimer) {
-        clearTimeout(boundaryTimer);
-        boundaryTimer = null;
-    }
-    if (volumeSubscription) {
-        try { volumeSubscription.cancel(); } catch (e) { }
-        volumeSubscription = null;
-        volumeSubOk = false;
-    }
-    scheduleState.lastAppliedVolume = null;
-    maybeStopPowerTriggers();
-    console.log('volume feature disabled');
-}
-
-// Read the feature switches from a config doc and start/stop accordingly.
+// Read the feature switch from a config doc and start/stop accordingly.
 function syncFeatures(cfg) {
-    var wake = !cfg || cfg.enableWake !== false;
-    var volume = !cfg || cfg.enableVolume !== false;
-    if (wake) { startWakeFeature(); } else { stopWakeFeature(); }
-    if (volume) { startVolumeFeature(); } else { stopVolumeFeature(); }
+    if (!cfg || cfg.enableWake !== false) { startWakeFeature(); } else { stopWakeFeature(); }
 }
 
 registerIncomingHooks();
@@ -935,16 +651,7 @@ service.register('getStatus', function (message) {
         uptimeSec: Math.round((Date.now() - startedAt) / 1000),
         resident: resident,
         power: power,
-        features: { wake: FEATURE.wake, volume: volumeStarted },
-        schedule: {
-            volume: scheduleState.lastAppliedVolume,
-            targets: scheduleState.targets,
-            applied: scheduleState.applied,
-            lastApplied: scheduleState.lastApplied,
-            lastCheck: scheduleState.lastCheck,
-            errors: scheduleState.errors,
-            config: SCHEDULE
-        }
+        features: { wake: FEATURE.wake }
     });
 });
 
