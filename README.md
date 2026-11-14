@@ -1,8 +1,7 @@
 # 唤醒电脑（Wake PC）
 
-在 LG webOS 电视上，**开机后自动向局域网内的电脑发送 Wake-on-LAN 魔术包**，实现「电视一开机，电脑就被唤醒」。
 - **适用平台**：webOS TV（已实测 LG G6 / webOS 26 中国版固件，开发者模式）
-- **License**：[MIT](./LICENSE)
+
 
 ---
 
